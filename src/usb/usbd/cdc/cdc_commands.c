@@ -2105,15 +2105,34 @@ static void cmd_ps4auth_set(const char *json)
     if (decoded_len != 256) { send_error("signature must be 256 bytes"); return; }
 
     // Save to flash
-    ps4_auth_flash_save(&auth);
+    if (!ps4_auth_flash_save(&auth)) {
+        send_error("flash write failed");
+        return;
+    }
 
 #ifdef ENABLE_PS4_LOCAL_AUTH
-    // Reload local auth module so it takes effect immediately
+    // Reload local auth module so it takes effect immediately, and actually
+    // consult whether the reload came back usable before reporting success.
     ps4_local_auth_reload();
-    printf("[CDC] PS4AUTH.SET: saved, local auth=%s\n",
-           ps4_local_auth_is_available() ? "ready" : "failed");
+    bool auth_ready = ps4_local_auth_is_available();
+    printf("[CDC] PS4AUTH.SET: saved, local auth=%s\n", auth_ready ? "ready" : "failed");
+    if (!auth_ready) {
+        send_error("key saved but verification failed");
+        return;
+    }
 #else
-    printf("[CDC] PS4AUTH.SET: saved (RSA signing not available in this build)\n");
+    // No mbedTLS in this build to verify via ps4_local_auth_reload() — verify
+    // the write the same way PS4AUTH.STATUS would: read the sector back and
+    // check magic + CRC.
+    ps4_auth_data_t verify;
+    bool auth_ready = ps4_auth_flash_load(&verify) && ps4_auth_flash_is_valid(&verify);
+    memset(&verify, 0, sizeof(verify));
+    printf("[CDC] PS4AUTH.SET: saved, verify=%s (RSA signing not available in this build)\n",
+           auth_ready ? "ok" : "failed");
+    if (!auth_ready) {
+        send_error("key saved but verification failed");
+        return;
+    }
 #endif
 
     send_ok();
@@ -2126,15 +2145,15 @@ static void cmd_ps4auth_status(const char *json)
 
     // Load once — reuse for both installed check and serial
     ps4_auth_data_t auth;
-    bool installed = ps4_auth_flash_load(&auth);
+    bool loaded = ps4_auth_flash_load(&auth);
 #ifdef ENABLE_PS4_LOCAL_AUTH
     bool active = ps4_local_auth_is_available();
-    if (!installed) installed = active;
 #else
     bool active = false;
 #endif
+    bool installed = loaded || active;
 
-    if (installed) {
+    if (loaded) {
         char serial_hex[33] = {0};
         for (int i = 0; i < 16; i++) {
             snprintf(serial_hex + i * 2, 3, "%02X", auth.serial[i]);
@@ -2143,6 +2162,13 @@ static void cmd_ps4auth_status(const char *json)
                  "{\"installed\":true,\"active\":%s,\"serial\":\"%s\"}",
                  active ? "true" : "false",
                  serial_hex);
+    } else if (installed) {
+        // active is true from the in-RAM auth module, but the flash copy is
+        // unreadable/corrupt right now — don't fabricate a serial from data
+        // that was never actually loaded/verified this call.
+        snprintf(response_buf, sizeof(response_buf),
+                 "{\"installed\":true,\"active\":%s,\"serial\":null}",
+                 active ? "true" : "false");
     } else {
         snprintf(response_buf, sizeof(response_buf),
                  "{\"installed\":false,\"active\":false}");
@@ -2154,7 +2180,10 @@ static void cmd_ps4auth_status(const char *json)
 static void cmd_ps4auth_clear(const char *json)
 {
     (void)json;
-    ps4_auth_flash_erase();
+    if (!ps4_auth_flash_erase()) {
+        send_error("flash erase failed");
+        return;
+    }
 #ifdef ENABLE_PS4_LOCAL_AUTH
     // Reinit local auth (will fail, disabling local auth)
     ps4_local_auth_reload();

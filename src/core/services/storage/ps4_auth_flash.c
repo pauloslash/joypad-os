@@ -115,6 +115,7 @@ bool ps4_auth_flash_load(ps4_auth_data_t *out)
     // Quick magic check before copying
     if (flash_ptr->magic != PS4_AUTH_FLASH_MAGIC) {
         printf("[ps4_auth] No auth data in flash (magic mismatch)\n");
+        memset(out, 0, sizeof(ps4_auth_data_t));
         return false;
     }
 
@@ -130,7 +131,7 @@ bool ps4_auth_flash_load(ps4_auth_data_t *out)
     return true;
 }
 
-void ps4_auth_flash_save(const ps4_auth_data_t *data)
+bool ps4_auth_flash_save(const ps4_auth_data_t *data)
 {
     // Build the write buffer (static so it survives flash ops)
     static ps4_auth_data_t write_buf;
@@ -144,31 +145,55 @@ void ps4_auth_flash_save(const ps4_auth_data_t *data)
     printf("[ps4_auth] Saving auth data to flash at offset 0x%lX...\n",
            (unsigned long)FLASH_PS4_AUTH_OFFSET);
 
-    // Erase sector
+    // Erase sector — try flash_safe_execute first, same fallback as flash.c
     flash_erase_params_t ep = {
         .offset = FLASH_PS4_AUTH_OFFSET,
         .length = FLASH_SECTOR_SIZE
     };
-    flash_safe_execute(do_flash_erase, &ep, UINT32_MAX);
+    int erase_result = flash_safe_execute(do_flash_erase, &ep, UINT32_MAX);
+    if (erase_result != PICO_OK) {
+        printf("[ps4_auth] flash_safe_execute erase failed (%d), trying direct erase...\n",
+               erase_result);
+        uint32_t ints = save_and_disable_interrupts();
+        flash_range_erase(FLASH_PS4_AUTH_OFFSET, FLASH_SECTOR_SIZE);
+        restore_interrupts(ints);
+    }
 
-    // Program 1024 bytes (4 × 256-byte pages)
+    // Program 1024 bytes (4 × 256-byte pages) — same fallback
     flash_program_params_t pp = {
         .offset = FLASH_PS4_AUTH_OFFSET,
         .data   = (const uint8_t *)&write_buf,
         .length = sizeof(ps4_auth_data_t)  // 1024 bytes, 4 pages
     };
-    flash_safe_execute(do_flash_program, &pp, UINT32_MAX);
+    int program_result = flash_safe_execute(do_flash_program, &pp, UINT32_MAX);
+    if (program_result != PICO_OK) {
+        printf("[ps4_auth] flash_safe_execute program failed (%d), trying direct program...\n",
+               program_result);
+        uint32_t ints = save_and_disable_interrupts();
+        flash_range_program(FLASH_PS4_AUTH_OFFSET, (const uint8_t *)&write_buf,
+                             sizeof(ps4_auth_data_t));
+        restore_interrupts(ints);
+    }
 
-    printf("[ps4_auth] Auth data saved successfully\n");
+    printf("[ps4_auth] Auth data saved\n");
+    return true;
 }
 
-void ps4_auth_flash_erase(void)
+bool ps4_auth_flash_erase(void)
 {
     printf("[ps4_auth] Erasing auth data from flash...\n");
     flash_erase_params_t ep = {
         .offset = FLASH_PS4_AUTH_OFFSET,
         .length = FLASH_SECTOR_SIZE
     };
-    flash_safe_execute(do_flash_erase, &ep, UINT32_MAX);
+    int erase_result = flash_safe_execute(do_flash_erase, &ep, UINT32_MAX);
+    if (erase_result != PICO_OK) {
+        printf("[ps4_auth] flash_safe_execute erase failed (%d), trying direct erase...\n",
+               erase_result);
+        uint32_t ints = save_and_disable_interrupts();
+        flash_range_erase(FLASH_PS4_AUTH_OFFSET, FLASH_SECTOR_SIZE);
+        restore_interrupts(ints);
+    }
     printf("[ps4_auth] Auth data erased\n");
+    return true;
 }

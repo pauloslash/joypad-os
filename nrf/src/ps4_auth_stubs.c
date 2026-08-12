@@ -11,7 +11,7 @@
 #include "core/services/storage/ps4_auth_flash.h"
 
 bool ps4_auth_flash_load(ps4_auth_data_t *out) { (void)out; return false; }
-void ps4_auth_flash_save(const ps4_auth_data_t *data) { (void)data; }
-void ps4_auth_flash_erase(void) {}
+bool ps4_auth_flash_save(const ps4_auth_data_t *data) { (void)data; return false; }
+bool ps4_auth_flash_erase(void) { return false; }
 bool ps4_auth_flash_is_valid(const ps4_auth_data_t *data) { (void)data; return false; }
 
